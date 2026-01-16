@@ -3,5 +3,5 @@ services:
     name: nexa-api
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -U pip && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
     startCommand: bash start.sh
