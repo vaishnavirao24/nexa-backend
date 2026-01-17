@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import numpy as np
 from pathlib import Path
+from typing import Dict, Any, Union, Optional
 
 from .labels import CLASS_NAMES
-
 
 # ----------------------------
 #  Device
@@ -86,14 +85,32 @@ class FusionModel(nn.Module):
 #  Inference Wrapper
 # ----------------------------
 class NexaInference:
-    def __init__(self, weights_path: str | Path):
+    """
+    Render-safe inference wrapper.
+
+    Fixes:
+    - Accepts yolo_pose_path (optional) so app init won't crash.
+    - Accepts bytes input (FastAPI UploadFile) for predict().
+    - Returns frontend UI schema:
+        predicted_class, confidence, class_probabilities
+    """
+
+    def __init__(
+        self,
+        weights_path: Union[str, Path, None] = None,
+        yolo_pose_path: Union[str, Path, None] = None,
+    ):
         self.device = DEVICE
         self.model = FusionModel(num_classes=len(CLASS_NAMES)).to(self.device)
         self.model.eval()
 
-        self._load_weights(weights_path)
+        # optional (kept for future, not used yet)
+        self.yolo_pose_path: Optional[Path] = Path(yolo_pose_path) if yolo_pose_path else None
 
-    def _load_weights(self, weights_path):
+        if weights_path is not None:
+            self._load_weights(weights_path)
+
+    def _load_weights(self, weights_path: Union[str, Path]) -> None:
         weights_path = Path(weights_path)
         if not weights_path.exists():
             raise FileNotFoundError(f"Model not found: {weights_path}")
@@ -106,10 +123,7 @@ class NexaInference:
         else:
             state_dict = checkpoint
 
-        missing, unexpected = self.model.load_state_dict(
-            state_dict,
-            strict=False
-        )
+        missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
 
         if missing:
             print("⚠️ Missing keys (ignored):")
@@ -124,44 +138,46 @@ class NexaInference:
         print("✅ Model loaded successfully")
 
     # --------------------------------------------------
-    #  Dummy feature loader (replace with real pipeline)
+    #  Dummy feature loader (replace later with real pipeline)
     # --------------------------------------------------
-    def _load_features(self, path: str):
+    def _load_features_from_bytes(self, video_bytes: bytes):
         """
         TEMPORARY:
         Replace this with:
+        - decode video bytes -> frames
         - pose extraction
         - resnet appearance features
-        """
 
-        # Fake inputs for now (to keep server alive)
+        For now: return zero tensors so end-to-end integration works.
+        """
         pose = torch.zeros((1, 16, 73), device=self.device)
         app = torch.zeros((1, 512), device=self.device)
-
         return pose, app
 
     # ----------------------------
-    #  Prediction API
+    #  Prediction API (bytes-in)
     # ----------------------------
     @torch.no_grad()
-    def predict(self, video_path: str, top_k: int = 3):
-        pose, app = self._load_features(video_path)
+    def predict(self, video_bytes: bytes) -> Dict[str, Any]:
+        pose, app = self._load_features_from_bytes(video_bytes)
 
         logits = self.model(pose, app)
-        probs = torch.softmax(logits, dim=1)[0]
+        probs = torch.softmax(logits, dim=1)[0]  # (C,)
 
-        topk = torch.topk(probs, k=min(top_k, len(CLASS_NAMES)))
+        # UI expects these exact keys
+        ui_keys = ["emotion", "social", "physical", "pose_idle"]
+        class_probabilities = {k: 0.0 for k in ui_keys}
 
-        result = {
-            "predicted_label": CLASS_NAMES[topk.indices[0].item()],
-            "confidence": float(topk.values[0].item()),
-            "topk": [
-                {
-                    "label": CLASS_NAMES[idx.item()],
-                    "score": float(score.item())
-                }
-                for idx, score in zip(topk.indices, topk.values)
-            ]
+        # Fill from CLASS_NAMES if they match UI keys
+        for i, name in enumerate(CLASS_NAMES):
+            if name in class_probabilities:
+                class_probabilities[name] = float(probs[i].item())
+
+        predicted_class = max(class_probabilities, key=class_probabilities.get)
+        confidence = float(class_probabilities[predicted_class])
+
+        return {
+            "predicted_class": predicted_class,
+            "confidence": confidence,
+            "class_probabilities": class_probabilities,
         }
-
-        return result
