@@ -8,10 +8,11 @@ from typing import Dict, Any, Union, Optional
 
 from .labels import CLASS_NAMES
 
+
 # ----------------------------
 #  Device
 # ----------------------------
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEFAULT_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # ----------------------------
@@ -89,8 +90,8 @@ class NexaInference:
     Render-safe inference wrapper.
 
     Fixes:
-    - Accepts yolo_pose_path (optional) so app init won't crash.
-    - Accepts bytes input (FastAPI UploadFile) for predict().
+    - Accepts yolo_pose_path + device + extra kwargs (won't crash if app passes them)
+    - predict() accepts bytes (FastAPI UploadFile)
     - Returns frontend UI schema:
         predicted_class, confidence, class_probabilities
     """
@@ -99,14 +100,25 @@ class NexaInference:
         self,
         weights_path: Union[str, Path, None] = None,
         yolo_pose_path: Union[str, Path, None] = None,
+        device: Optional[str] = None,
+        **kwargs,
     ):
-        self.device = DEVICE
+        # Accept and ignore extra kwargs to prevent future init crashes
+        # e.g. kwargs may include yolo_model_path, config, etc.
+        _ = kwargs
+
+        if device is not None:
+            self.device = torch.device(device)
+        else:
+            self.device = DEFAULT_DEVICE
+
         self.model = FusionModel(num_classes=len(CLASS_NAMES)).to(self.device)
         self.model.eval()
 
-        # optional (kept for future, not used yet)
+        # optional (kept for future; not used yet)
         self.yolo_pose_path: Optional[Path] = Path(yolo_pose_path) if yolo_pose_path else None
 
+        # load weights if provided
         if weights_path is not None:
             self._load_weights(weights_path)
 
@@ -143,12 +155,12 @@ class NexaInference:
     def _load_features_from_bytes(self, video_bytes: bytes):
         """
         TEMPORARY:
-        Replace this with:
+        Replace with real pipeline:
         - decode video bytes -> frames
         - pose extraction
         - resnet appearance features
 
-        For now: return zero tensors so end-to-end integration works.
+        For now: zeros so end-to-end integration works.
         """
         pose = torch.zeros((1, 16, 73), device=self.device)
         app = torch.zeros((1, 512), device=self.device)
@@ -168,7 +180,7 @@ class NexaInference:
         ui_keys = ["emotion", "social", "physical", "pose_idle"]
         class_probabilities = {k: 0.0 for k in ui_keys}
 
-        # Fill from CLASS_NAMES if they match UI keys
+        # Fill only if CLASS_NAMES match these keys
         for i, name in enumerate(CLASS_NAMES):
             if name in class_probabilities:
                 class_probabilities[name] = float(probs[i].item())
